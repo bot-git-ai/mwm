@@ -83,48 +83,6 @@ const K_AX_SUCCESS: i32 = 0;
 
 // --- HIServices / ApplicationServices --------------------------------------
 
-// The Accessibility constants (`kAX...`) are exported as data from libSystem
-// rather than as symbols from a framework, so they are linked against System.
-#[link(name = "System")]
-extern "C" {
-    /// The CFType-typed AX value types, used to create and read CGPoint/CGSize.
-    fn kAXValueCGCPoint() -> CFTypeRef;
-    fn kAXValueCGSize() -> CFTypeRef;
-    fn kAXPositionAttribute() -> CFStringRef;
-    fn kAXSizeAttribute() -> CFStringRef;
-    fn kAXTitleAttribute() -> CFStringRef;
-    fn kAXRoleAttribute() -> CFStringRef;
-    fn kAXSubroleAttribute() -> CFStringRef;
-    fn kAXWindowsAttribute() -> CFStringRef;
-    fn kAXFocusedWindowAttribute() -> CFStringRef;
-    fn kAXFocusedApplicationAttribute() -> CFStringRef;
-    fn kAXMinimizedAttribute() -> CFStringRef;
-    fn kAXMainAttribute() -> CFStringRef;
-    fn kAXFocusedAttribute() -> CFStringRef;
-    fn kAXFrontmostAttribute() -> CFStringRef;
-    fn kAXCloseButtonAttribute() -> CFStringRef;
-    fn kAXWindowNumberAttribute() -> CFStringRef;
-    fn kAXRaiseAction() -> CFStringRef;
-    fn kAXPressAction() -> CFStringRef;
-    fn kAXWindowRole() -> CFStringRef;
-    fn kAXStandardWindowSubrole() -> CFStringRef;
-    fn kAXFocusedWindowChangedNotification() -> CFStringRef;
-    fn kAXMainWindowChangedNotification() -> CFStringRef;
-    fn kAXWindowCreatedNotification() -> CFStringRef;
-    fn kAXUIElementDestroyedNotification() -> CFStringRef;
-    fn kAXWindowMiniaturizedNotification() -> CFStringRef;
-    fn kAXWindowDeminiaturizedNotification() -> CFStringRef;
-    fn kAXMovedNotification() -> CFStringRef;
-    fn kAXResizedNotification() -> CFStringRef;
-    fn kAXWindowMovedNotification() -> CFStringRef;
-    fn kAXWindowResizedNotification() -> CFStringRef;
-    fn kAXTrustedCheckOptionPrompt() -> CFStringRef;
-    fn kCFRunLoopCommonModes() -> CFStringRef;
-    fn kCGWindowNumber() -> CFStringRef;
-    fn kCGWindowOwnerPID() -> CFStringRef;
-
-}
-
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
@@ -322,6 +280,59 @@ impl Drop for CfRef {
     }
 }
 
+/// Build a CFString from a Rust literal.
+///
+/// The Accessibility attribute and action constants are published by name
+/// rather than as linker symbols, so they are created from their own text
+/// once and then cached. That is the documented spelling of each attribute,
+/// so a typo surfaces as a failed lookup rather than as silent nonsense.
+fn ax_string(name: &str) -> CFStringRef {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    extern "C" {
+        fn CFStringCreateWithBytes(
+            allocator: CFAllocatorRef,
+            bytes: *const u8,
+            length: CFIndex,
+            encoding: u32,
+            is_external_representation: bool,
+        ) -> CFStringRef;
+    }
+    const K_CF_STRING_ENCODING_ASCII: u32 = 0x0600_0001;
+
+    static CACHE: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = name.as_ptr() as usize;
+    if let Ok(cache) = cache.lock() {
+        if let Some(existing) = cache.get(&key) {
+            return *existing as CFStringRef;
+        }
+    }
+    let created = unsafe {
+        CFStringCreateWithBytes(
+            std::ptr::null(),
+            name.as_ptr(),
+            name.len() as CFIndex,
+            K_CF_STRING_ENCODING_ASCII,
+            false,
+        )
+    };
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(key, created as usize);
+    }
+    created
+}
+
+/// The AX value type for a CGPoint, asked of the framework by name.
+fn ax_value_cg_point() -> CFTypeRef {
+    ax_string("AXValueCGPoint")
+}
+
+/// The AX value type for a CGSize.
+fn ax_value_cg_size() -> CFTypeRef {
+    ax_string("AXValueCGSize")
+}
+
 /// Convert a Quartz bottom-left-origin rect to mwm top-left-origin pixels.
 fn to_top_left_origin(rect: CGRect, primary_height: f64) -> Rect {
     Rect::new(
@@ -497,7 +508,7 @@ impl DarwinWindowSystem {
                 let mut windows_ref: CFTypeRef = std::ptr::null();
                 if AXUIElementCopyAttributeValue(
                     app.raw() as AXUIElementRef,
-                    kAXWindowsAttribute(),
+                    ax_string("kAXWindowsAttribute"),
                     &mut windows_ref,
                 ) == K_AX_SUCCESS
                     && !windows_ref.is_null()
@@ -540,15 +551,17 @@ impl DarwinWindowSystem {
     ) -> Option<(String, AxWindow)> {
         // Only ordinary document windows are tiled: panels, sheets and other
         // auxiliary windows keep the geometry their app gave them.
-        if Self::ax_get_string(window, kAXRoleAttribute()) != Self::cf_string(kAXWindowRole()) {
-            return None;
-        }
-        if Self::ax_get_string(window, kAXSubroleAttribute())
-            != Self::cf_string(kAXStandardWindowSubrole())
+        if Self::ax_get_string(window, ax_string("kAXRoleAttribute"))
+            != Self::cf_string(ax_string("kAXWindowRole"))
         {
             return None;
         }
-        if Self::ax_get_bool(window, kAXMinimizedAttribute()) {
+        if Self::ax_get_string(window, ax_string("kAXSubroleAttribute"))
+            != Self::cf_string(ax_string("kAXStandardWindowSubrole"))
+        {
+            return None;
+        }
+        if Self::ax_get_bool(window, ax_string("kAXMinimizedAttribute")) {
             return None;
         }
         let number = Self::window_number(window);
@@ -609,11 +622,11 @@ unsafe fn cg_window_pid_number(info: CFTypeRef) -> Option<(Pid, i64)> {
     }
     let pid = cf_number_to_i64(CFDictionaryGetValue(
         info as CFDictionaryRef,
-        kCGWindowOwnerPID(),
+        ax_string("kCGWindowOwnerPID"),
     ))? as Pid;
     let number = cf_number_to_i64(CFDictionaryGetValue(
         info as CFDictionaryRef,
-        kCGWindowNumber(),
+        ax_string("kCGWindowNumber"),
     ))?;
     (pid > 0 && number > 0).then_some((pid, number))
 }
@@ -667,8 +680,8 @@ impl DarwinWindowSystem {
 
     /// Read the AX frame (position + size), already top-left origin.
     unsafe fn ax_frame(element: AXUIElementRef) -> Option<Rect> {
-        let position = Self::ax_get(element, kAXPositionAttribute())?;
-        let size = Self::ax_get(element, kAXSizeAttribute())?;
+        let position = Self::ax_get(element, ax_string("kAXPositionAttribute"))?;
+        let size = Self::ax_get(element, ax_string("kAXSizeAttribute"))?;
         let mut point = CGPoint { x: 0.0, y: 0.0 };
         let mut size_out = CGSize {
             width: 0.0,
@@ -676,14 +689,14 @@ impl DarwinWindowSystem {
         };
         if !AXValueGetValue(
             position.raw() as AXValueRef,
-            kAXValueCGCPoint() as i32,
+            ax_value_cg_point() as i32,
             std::ptr::from_mut(&mut point).cast::<c_void>(),
         ) {
             return None;
         }
         if !AXValueGetValue(
             size.raw() as AXValueRef,
-            kAXValueCGSize() as i32,
+            ax_value_cg_size() as i32,
             std::ptr::from_mut(&mut size_out).cast::<c_void>(),
         ) {
             return None;
@@ -698,7 +711,7 @@ impl DarwinWindowSystem {
 
     /// The AX window number, when the element exposes one.
     unsafe fn window_number(element: AXUIElementRef) -> Option<i64> {
-        let value = Self::ax_get(element, kAXWindowNumberAttribute())?;
+        let value = Self::ax_get(element, ax_string("kAXWindowNumberAttribute"))?;
         cf_number_to_i64(value.raw())
     }
 
@@ -713,11 +726,11 @@ impl DarwinWindowSystem {
             height: f64::from(frame.height),
         };
         let point_value = AXValueCreate(
-            kAXValueCGCPoint() as i32,
+            ax_value_cg_point() as i32,
             std::ptr::from_ref(&point).cast::<c_void>(),
         );
         let size_value = AXValueCreate(
-            kAXValueCGSize() as i32,
+            ax_value_cg_size() as i32,
             std::ptr::from_ref(&size).cast::<c_void>(),
         );
         let ok = !point_value.is_null() && !size_value.is_null();
@@ -725,10 +738,11 @@ impl DarwinWindowSystem {
             return false;
         }
         let ok_position =
-            AXUIElementSetAttributeValue(element, kAXPositionAttribute(), point_value)
+            AXUIElementSetAttributeValue(element, ax_string("kAXPositionAttribute"), point_value)
                 == K_AX_SUCCESS;
         let ok_size =
-            AXUIElementSetAttributeValue(element, kAXSizeAttribute(), size_value) == K_AX_SUCCESS;
+            AXUIElementSetAttributeValue(element, ax_string("kAXSizeAttribute"), size_value)
+                == K_AX_SUCCESS;
         if !point_value.is_null() {
             CFRelease(point_value);
         }
@@ -751,7 +765,7 @@ impl WindowSystem for DarwinWindowSystem {
 
     fn prompt_for_accessibility(&self) -> bool {
         unsafe {
-            let keys: [*const c_void; 1] = [kAXTrustedCheckOptionPrompt()];
+            let keys: [*const c_void; 1] = [ax_string("kAXTrustedCheckOptionPrompt")];
             let values: [*const c_void; 1] = [kCFBooleanTrue];
             let options = CFDictionaryCreate(
                 std::ptr::null(),
@@ -816,7 +830,7 @@ impl WindowSystem for DarwinWindowSystem {
             let Some(screen) = screen_for_frame(&frame, &screens) else {
                 continue;
             };
-            let title = unsafe { Self::ax_get_string(handle.raw, kAXTitleAttribute()) };
+            let title = unsafe { Self::ax_get_string(handle.raw, ax_string("kAXTitleAttribute")) };
             windows.push(WindowInfo {
                 key: format!("{pid}:{number}"),
                 pid,
@@ -842,11 +856,11 @@ impl WindowSystem for DarwinWindowSystem {
             let system = CfRef::new(AXUIElementCreateSystemWide())?;
             let focused_app = Self::ax_get(
                 system.raw() as AXUIElementRef,
-                kAXFocusedApplicationAttribute(),
+                ax_string("kAXFocusedApplicationAttribute"),
             )?;
             let focused_window = Self::ax_get(
                 focused_app.raw() as AXUIElementRef,
-                kAXFocusedWindowAttribute(),
+                ax_string("kAXFocusedWindowAttribute"),
             )?;
             let mut pid: Pid = 0;
             if AXUIElementGetPid(focused_app.raw() as AXUIElementRef, &mut pid) != K_AX_SUCCESS {
@@ -865,7 +879,7 @@ impl WindowSystem for DarwinWindowSystem {
                 pid,
                 title: Self::ax_get_string(
                     focused_window.raw() as AXUIElementRef,
-                    kAXTitleAttribute(),
+                    ax_string("kAXTitleAttribute"),
                 ),
                 frame,
                 screen_key: screen.key.clone(),
@@ -891,13 +905,17 @@ impl WindowSystem for DarwinWindowSystem {
                 let app = CfRef::new(app).expect("checked non-null");
                 AXUIElementSetAttributeValue(
                     app.raw() as AXUIElementRef,
-                    kAXFrontmostAttribute(),
+                    ax_string("kAXFrontmostAttribute"),
                     kCFBooleanTrue,
                 );
             }
-            AXUIElementSetAttributeValue(handle.raw, kAXMainAttribute(), kCFBooleanTrue);
-            AXUIElementSetAttributeValue(handle.raw, kAXFocusedAttribute(), kCFBooleanTrue);
-            AXUIElementPerformAction(handle.raw, kAXRaiseAction()) == K_AX_SUCCESS
+            AXUIElementSetAttributeValue(handle.raw, ax_string("kAXMainAttribute"), kCFBooleanTrue);
+            AXUIElementSetAttributeValue(
+                handle.raw,
+                ax_string("kAXFocusedAttribute"),
+                kCFBooleanTrue,
+            );
+            AXUIElementPerformAction(handle.raw, ax_string("kAXRaiseAction")) == K_AX_SUCCESS
         }
     }
 
@@ -906,10 +924,11 @@ impl WindowSystem for DarwinWindowSystem {
             return false;
         };
         unsafe {
-            let Some(button) = Self::ax_get(handle.raw, kAXCloseButtonAttribute()) else {
+            let Some(button) = Self::ax_get(handle.raw, ax_string("kAXCloseButtonAttribute"))
+            else {
                 return false;
             };
-            AXUIElementPerformAction(button.raw() as AXUIElementRef, kAXPressAction())
+            AXUIElementPerformAction(button.raw() as AXUIElementRef, ax_string("kAXPressAction"))
                 == K_AX_SUCCESS
         }
     }
@@ -1045,7 +1064,7 @@ impl DarwinWindowSystem {
                 return;
             }
             let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
-            CFRunLoopAddSource(loop_ref, source, kCFRunLoopCommonModes());
+            CFRunLoopAddSource(loop_ref, source, ax_string("kCFRunLoopCommonModes"));
             CGEventTapEnable(tap, true);
             // CFRunLoopRun never returns; stopping the loop is what ends us.
             CFRunLoopRun();
@@ -1124,18 +1143,18 @@ unsafe fn attach_observer_for_pid(
     }
     let observer = CfRef::new(observer).expect("checked non-null");
     let source = AXObserverGetRunLoopSource(observer.raw() as AXObserverRef);
-    CFRunLoopAddSource(loop_ref, source, kCFRunLoopCommonModes());
+    CFRunLoopAddSource(loop_ref, source, ax_string("kCFRunLoopCommonModes"));
     let notifications = [
-        kAXWindowCreatedNotification(),
-        kAXFocusedWindowChangedNotification(),
-        kAXMainWindowChangedNotification(),
-        kAXUIElementDestroyedNotification(),
-        kAXWindowMiniaturizedNotification(),
-        kAXWindowDeminiaturizedNotification(),
-        kAXMovedNotification(),
-        kAXResizedNotification(),
-        kAXWindowMovedNotification(),
-        kAXWindowResizedNotification(),
+        ax_string("kAXWindowCreatedNotification"),
+        ax_string("kAXFocusedWindowChangedNotification"),
+        ax_string("kAXMainWindowChangedNotification"),
+        ax_string("kAXUIElementDestroyedNotification"),
+        ax_string("kAXWindowMiniaturizedNotification"),
+        ax_string("kAXWindowDeminiaturizedNotification"),
+        ax_string("kAXMovedNotification"),
+        ax_string("kAXResizedNotification"),
+        ax_string("kAXWindowMovedNotification"),
+        ax_string("kAXWindowResizedNotification"),
     ];
     // The refcon is the shared callback; leak the Arc intentionally — it
     // lives until the process exits, matching the observer's lifetime.
