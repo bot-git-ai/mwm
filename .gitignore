@@ -1,1 +1,9 @@
+# Build output. Reproducible from the committed sources; never committed.
 target/
+
+# Release recovery journals. They live inside the repository so a read-only
+# copy root cannot stop a release recording itself, and they are archived
+# rather than deleted, so the directory persists after a successful release.
+# Without this, every release leaves master permanently "dirty" and the empty
+# directory is easy to sweep into a commit with `git add -A`.
+.release-recovery/
