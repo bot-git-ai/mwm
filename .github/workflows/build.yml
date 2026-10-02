@@ -1,0 +1,43 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: linux gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      # The macOS code cannot be linked here, but it can be type-checked, so
+      # this job catches every error in the platform layer without a Mac.
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -W clippy::pedantic -D warnings
+      - run: cargo test
+      - run: cargo check --all-targets --target aarch64-apple-darwin
+
+  macos:
+    name: macos build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -W clippy::pedantic -D warnings
+      - run: cargo test
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mwm-aarch64-apple-darwin
+          path: target/release/mwm

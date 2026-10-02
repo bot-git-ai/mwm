@@ -1,0 +1,12 @@
+[package]
+name = "mwm"
+version = "1.0.0"
+edition = "2021"
+license = "AGPL-3.0"
+description = "Small macOS tiling window manager, i3-style columns"
+
+[dependencies]
+
+[profile.release]
+strip = true
+lto = true
