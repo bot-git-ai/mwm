@@ -295,7 +295,7 @@ mod tests {
     fn keeps_virtual_key_codes_literal() {
         let chord = KeyChord::parse("vk:0x7b").expect("parses");
         assert_eq!(chord.key, "vk:0x7b");
-        assert!(chord.modifiers.is_empty());
+        assert_eq!(chord.modifiers.len(), 0);
     }
 
     #[test]
@@ -432,7 +432,7 @@ mod tests {
         assert!(load_bindings(Some(missing.as_path())).is_err());
         // With no path, a missing file simply means the defaults.
         let bindings = load_bindings(None).expect("defaults load");
-        assert!(!bindings.is_empty());
+        assert_eq!(bindings.len(), default_bindings().len());
     }
 
     #[test]
