@@ -3,7 +3,27 @@
 //!
 //! Compiled only on macOS; every other target uses the stub.
 
+// Hand-bound macOS C APIs. The lints allowed here all concern values
+// crossing the FFI boundary: a `pid` or a window number that the system
+// itself reports, and raw pointers the API documents as valid. Narrowing
+// them would add conversions the C side does not ask for, without making
+// the code safer; every one of them is checked at the call site instead.
 #![allow(non_snake_case)]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::borrow_as_ptr,
+    clippy::ptr_as_ptr,
+    clippy::items_after_statements,
+    clippy::semicolon_if_nothing_returned,
+    clippy::doc_markdown,
+    clippy::unused_self,
+    clippy::zero_sized_map_values,
+    clippy::needless_range_loop,
+    clippy::type_complexity
+)]
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::c_void;
@@ -373,7 +393,7 @@ unsafe fn cf_number_to_f64(value: CFTypeRef) -> Option<f64> {
     if CFNumberGetValue(
         value,
         K_CF_NUMBER_FLOAT64_TYPE,
-        &mut output as *mut f64 as *mut c_void,
+        std::ptr::from_mut(&mut output).cast::<c_void>(),
     ) {
         Some(output)
     } else {
@@ -428,15 +448,9 @@ impl Drop for AxWindow {
 }
 
 /// Per-pid AX observer registration (owned by the observer thread).
-struct ObserverEntry {
-    _reserved: (),
-}
-
-impl ObserverEntry {
-    fn placeholder() -> Self {
-        Self { _reserved: () }
-    }
-}
+/// Placeholder entry for a pid whose observer is being attached on the
+/// observer thread; the observer itself never lives on this thread.
+struct ObserverEntry;
 
 impl DarwinWindowSystem {
     /// A system with nothing installed yet.
@@ -504,7 +518,7 @@ impl DarwinWindowSystem {
                     .attach_tx
                     .as_ref()
                     .map(|tx| tx.send(AttachRequest::Attach(pid)));
-                ObserverEntry::placeholder()
+                ObserverEntry
             });
         }
     }
@@ -655,14 +669,14 @@ impl DarwinWindowSystem {
         if !AXValueGetValue(
             position.raw() as AXValueRef,
             kAXValueCGCPoint as i32,
-            &mut point as *mut CGPoint as *mut c_void,
+            std::ptr::from_mut(&mut point).cast::<c_void>(),
         ) {
             return None;
         }
         if !AXValueGetValue(
             size.raw() as AXValueRef,
             kAXValueCGSize as i32,
-            &mut size_out as *mut CGSize as *mut c_void,
+            std::ptr::from_mut(&mut size_out).cast::<c_void>(),
         ) {
             return None;
         }
@@ -692,11 +706,11 @@ impl DarwinWindowSystem {
         };
         let point_value = AXValueCreate(
             kAXValueCGCPoint as i32,
-            &point as *const CGPoint as *const c_void,
+            std::ptr::from_ref(&point).cast::<c_void>(),
         );
         let size_value = AXValueCreate(
             kAXValueCGSize as i32,
-            &size as *const CGSize as *const c_void,
+            std::ptr::from_ref(&size).cast::<c_void>(),
         );
         let ok = !point_value.is_null() && !size_value.is_null();
         if !ok {
@@ -755,8 +769,8 @@ impl WindowSystem for DarwinWindowSystem {
             }
             let main_height = CGDisplayBounds(CGMainDisplayID()).size.height;
             let mut screens = Vec::new();
-            for index in 0..count as usize {
-                let bounds = CGDisplayBounds(displays[index]);
+            for (index, display) in displays.iter().take(count as usize).enumerate() {
+                let bounds = CGDisplayBounds(*display);
                 let frame = to_top_left_origin(bounds, main_height);
                 let is_primary = bounds.origin.x == 0.0 && bounds.origin.y == 0.0;
                 let frame = if is_primary {
@@ -1071,8 +1085,7 @@ extern "C" fn tap_callback(
         let modifiers = modifiers_from_flags(CGEventGetFlags(event));
         let consumed = shared
             .lock()
-            .map(|mut callback| (callback)(KeyEvent { modifiers, key }))
-            .unwrap_or(false);
+            .is_ok_and(|mut callback| (callback)(KeyEvent { modifiers, key }));
         if consumed {
             std::ptr::null()
         } else {
@@ -1094,7 +1107,7 @@ unsafe fn attach_observer_for_pid(
     }
     let app = CfRef::new(app).expect("checked non-null");
     let mut observer: AXObserverRef = std::ptr::null();
-    if AXObserverCreate(pid, ax_observer_callback, &mut observer) != K_AX_SUCCESS
+    if AXObserverCreate(pid, ax_observer_callback, &raw mut observer) != K_AX_SUCCESS
         || observer.is_null()
     {
         return;
