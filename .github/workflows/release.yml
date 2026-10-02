@@ -1,0 +1,59 @@
+# Publishes a release for a pushed version tag.
+#
+# Immutable releases are a repository setting that GitHub does not expose on
+# personal accounts, so this workflow does the two things it can: create the
+# release from the tag, and refuse to continue if the tag it was handed has
+# moved. Paired with the `immutable-release-tags` ruleset (see README), a tag
+# cannot be changed or deleted afterwards.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The tag is the contract: build exactly what the tag names, and refuse
+      # to go on if the build does not reproduce it.
+      - name: Check the tag is the current commit
+        run: |
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "$GITHUB_REF_NAME")" \
+            || { echo "::error::tag $GITHUB_REF_NAME does not point at this commit"; exit 1; }
+
+      - run: cargo build --release --locked
+      - run: cargo test
+
+      - name: Assemble the release archive
+        run: |
+          mkdir -p dist
+          cp target/release/mwm "dist/mwm-${{ runner.arch == 'ARM64' && 'aarch64' || 'x86_64' }}-apple-darwin"
+          cp LICENSE.md README.md dist/
+          cd dist && tar -czf "../mwm-$GITHUB_REF_NAME-apple-darwin.tar.gz" .
+
+      # Notes are generated from the commits since the previous tag, so a
+      # release describes what actually changed without anyone maintaining a
+      # changelog.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            "mwm-$GITHUB_REF_NAME-apple-darwin.tar.gz"
+
+      # The ruleset blocks deletion and updates; this states the guarantee at
+      # the point someone would want to break it.
+      - name: Report that the tag is now immutable
+        run: echo "Published $GITHUB_REF_NAME. Its tag and assets are protected by the repository ruleset."

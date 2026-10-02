@@ -106,6 +106,21 @@ an alternative set without replacing the one you use:
 mwm daemon --keybindings /path/to/keybindings.json
 ```
 
+## Releases
+
+Every `v*` tag builds a release automatically: the binary is built, packaged
+with the license and this file, and published with notes generated from the
+commits since the previous tag.
+
+```sh
+git tag v1.1.0 && git push origin v1.1.0
+```
+
+Once a release is published its tag and its files cannot be changed or deleted:
+the repository protects release tags. To try a new version before committing to
+it, use a pre-release (`v1.1.0-rc1`) — those are ordinary tags and can be
+replaced until you cut the real one.
+
 ## Troubleshooting
 
 - **Nothing happens when I press a key.** Check `mwm status` — it tells you
