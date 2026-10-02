@@ -450,6 +450,6 @@ mod tests {
     fn empty_set_is_not_the_same_as_missing() {
         let bindings = parse_binding_map(r#"{"q": "close"}"#).expect("parses");
         assert!(match_key(&event(KeyName::Letter('q'), &[]), &bindings).is_some());
-        assert!(!BTreeSet::from([Modifier::Shift]).is_empty());
+        assert_eq!(BTreeSet::from([Modifier::Shift]).len(), 1);
     }
 }
