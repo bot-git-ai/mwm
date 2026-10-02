@@ -76,8 +76,16 @@ talks to the running daemon.
 
 ## Your own keybindings
 
-Pass a JSON file to the daemon to replace the defaults. It maps a chord to a
-command, using the commands from the table above:
+To replace the defaults, put a `keybindings.json` in your configuration
+directory:
+
+```sh
+$XDG_CONFIG_HOME/mwm/keybindings.json      # usually ~/.config/mwm/keybindings.json
+```
+
+If that file exists, mwm uses it instead of the defaults; if it does not, the
+defaults apply and there is nothing to do. The file maps a chord to a command,
+using the commands from the table above:
 
 ```json
 {
@@ -88,12 +96,15 @@ command, using the commands from the table above:
 }
 ```
 
-```sh
-mwm daemon --keybindings ~/mwm-keybindings.json
-```
-
 Chord modifiers may be written as `cmd`, `ctrl`, `alt` and `shift`, with
 either `-` or `+` between the parts (`shift-cmd-left`, `shift+cmd+left`).
+
+You can also point the daemon at a specific file, which is useful for testing
+an alternative set without replacing the one you use:
+
+```sh
+mwm daemon --keybindings /path/to/keybindings.json
+```
 
 ## Troubleshooting
 
