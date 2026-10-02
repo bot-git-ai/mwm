@@ -83,12 +83,13 @@ const K_AX_SUCCESS: i32 = 0;
 
 // --- HIServices / ApplicationServices --------------------------------------
 
-#[link(name = "ApplicationServices", kind = "framework")]
+// The Accessibility constants (`kAX...`) are exported as data from libSystem
+// rather than as symbols from a framework, so they are linked against System.
+#[link(name = "System")]
 extern "C" {
-
-    static kAXValueCGCPoint: CFTypeRef;
-    static kAXValueCGSize: CFTypeRef;
-
+    /// The CFType-typed AX value types, used to create and read CGPoint/CGSize.
+    fn kAXValueCGCPoint() -> CFTypeRef;
+    fn kAXValueCGSize() -> CFTypeRef;
     fn kAXPositionAttribute() -> CFStringRef;
     fn kAXSizeAttribute() -> CFStringRef;
     fn kAXTitleAttribute() -> CFStringRef;
@@ -122,6 +123,10 @@ extern "C" {
     fn kCGWindowNumber() -> CFStringRef;
     fn kCGWindowOwnerPID() -> CFStringRef;
 
+}
+
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
     fn AXIsProcessTrusted() -> bool;
     fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> bool;
     fn AXUIElementCreateSystemWide() -> AXUIElementRef;
@@ -671,14 +676,14 @@ impl DarwinWindowSystem {
         };
         if !AXValueGetValue(
             position.raw() as AXValueRef,
-            kAXValueCGCPoint as i32,
+            kAXValueCGCPoint() as i32,
             std::ptr::from_mut(&mut point).cast::<c_void>(),
         ) {
             return None;
         }
         if !AXValueGetValue(
             size.raw() as AXValueRef,
-            kAXValueCGSize as i32,
+            kAXValueCGSize() as i32,
             std::ptr::from_mut(&mut size_out).cast::<c_void>(),
         ) {
             return None;
@@ -708,11 +713,11 @@ impl DarwinWindowSystem {
             height: f64::from(frame.height),
         };
         let point_value = AXValueCreate(
-            kAXValueCGCPoint as i32,
+            kAXValueCGCPoint() as i32,
             std::ptr::from_ref(&point).cast::<c_void>(),
         );
         let size_value = AXValueCreate(
-            kAXValueCGSize as i32,
+            kAXValueCGSize() as i32,
             std::ptr::from_ref(&size).cast::<c_void>(),
         );
         let ok = !point_value.is_null() && !size_value.is_null();
