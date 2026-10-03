@@ -5,6 +5,8 @@
 //! accepted and collapse. The default map mirrors the shortcuts mwm ships
 //! with, and a JSON file can replace it entirely.
 
+use std::path::{Path, PathBuf};
+
 use crate::platform::KeyEvent;
 use crate::request::Request;
 use crate::types::{Modifier, ModifierSet};
@@ -185,27 +187,50 @@ pub fn match_key<'a>(event: &KeyEvent, bindings: &'a [KeyBinding]) -> Option<&'a
 
 /// Build the bindings the daemon should use: the file's contents when given,
 /// otherwise the built-in defaults.
-pub fn load_bindings(path: Option<&std::path::Path>) -> Result<Vec<KeyBinding>, String> {
-    match path {
-        None => {
-            let pairs = default_bindings();
-            let mut bindings = Vec::with_capacity(pairs.len());
-            for (chord, command) in pairs {
-                bindings.push(KeyBinding {
-                    chord: KeyChord::parse(chord)
-                        .ok_or_else(|| format!("invalid default chord: {chord}"))?,
-                    request: Request::parse_command(command)
-                        .ok_or_else(|| format!("invalid default command: {command}"))?,
-                });
-            }
-            Ok(bindings)
-        }
-        Some(path) => {
-            let text = std::fs::read_to_string(path)
-                .map_err(|error| format!("cannot read keybindings {}: {error}", path.display()))?;
-            parse_binding_map(&text)
-        }
+/// Where mwm looks for a keybindings file when none is given on the command
+/// line: `$XDG_CONFIG_HOME/mwm/keybindings.json`, or `~/.config/mwm/keybindings.json`
+/// when that variable is not set.
+#[must_use]
+pub fn default_keybindings_path() -> Option<PathBuf> {
+    let base: PathBuf = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(value) if !value.is_empty() => PathBuf::from(value),
+        _ => PathBuf::from(std::env::var_os("HOME")?),
+    };
+    Some(base.join("mwm").join("keybindings.json"))
+}
+
+/// The bindings the daemon should use.
+///
+/// An explicit `path` is read as given. With no path, the file at
+/// [`default_keybindings_path`] is used when it exists, and the built-in
+/// defaults otherwise — a missing file is not an error, because most people
+/// will never write one.
+pub fn load_bindings(path: Option<&Path>) -> Result<Vec<KeyBinding>, String> {
+    let chosen = match path {
+        Some(path) => PathBuf::from(path),
+        None => match default_keybindings_path() {
+            Some(candidate) if candidate.is_file() => candidate,
+            _ => return built_in_bindings(),
+        },
+    };
+    let text = std::fs::read_to_string(&chosen)
+        .map_err(|error| format!("cannot read keybindings {}: {error}", chosen.display()))?;
+    parse_binding_map(&text)
+}
+
+/// The bindings mwm ships with, parsed.
+fn built_in_bindings() -> Result<Vec<KeyBinding>, String> {
+    let pairs = default_bindings();
+    let mut bindings = Vec::with_capacity(pairs.len());
+    for (chord, command) in pairs {
+        bindings.push(KeyBinding {
+            chord: KeyChord::parse(chord)
+                .ok_or_else(|| format!("invalid default chord: {chord}"))?,
+            request: Request::parse_command(command)
+                .ok_or_else(|| format!("invalid default command: {command}"))?,
+        });
     }
+    Ok(bindings)
 }
 
 #[cfg(test)]
@@ -270,7 +295,7 @@ mod tests {
     fn keeps_virtual_key_codes_literal() {
         let chord = KeyChord::parse("vk:0x7b").expect("parses");
         assert_eq!(chord.key, "vk:0x7b");
-        assert!(chord.modifiers.is_empty());
+        assert_eq!(chord.modifiers.len(), 0);
     }
 
     #[test]
@@ -376,9 +401,55 @@ mod tests {
     }
 
     #[test]
+    fn config_path_follows_xdg_config_home() {
+        // The path is derived from the environment, so assert the shape rather
+        // than an absolute value: XDG_CONFIG_HOME when set, HOME otherwise.
+        let path = super::default_keybindings_path().expect("a home directory exists");
+        assert_eq!(
+            path.file_name(),
+            Some(std::ffi::OsStr::new("keybindings.json"))
+        );
+        assert_eq!(
+            path.parent().and_then(std::path::Path::file_name),
+            Some(std::ffi::OsStr::new("mwm"))
+        );
+        let expected_base = std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from));
+        assert_eq!(
+            path.parent().and_then(std::path::Path::parent),
+            expected_base.as_deref()
+        );
+    }
+
+    #[test]
+    fn a_missing_file_is_not_an_error() {
+        let missing = std::env::temp_dir().join("mwm-no-such-keybindings.json");
+        let _ = std::fs::remove_file(&missing);
+        // An explicit path that does not exist is still an error: the user
+        // asked for that file.
+        assert!(load_bindings(Some(missing.as_path())).is_err());
+        // With no path, a missing file simply means the defaults.
+        let bindings = load_bindings(None).expect("defaults load");
+        assert_eq!(bindings.len(), default_bindings().len());
+    }
+
+    #[test]
+    fn an_explicit_file_is_used() {
+        let path =
+            std::env::temp_dir().join(format!("mwm-keybindings-{}.json", std::process::id()));
+        std::fs::write(&path, r#"{"alt-h": "focus left", "shift-alt-q": "close"}"#).expect("write");
+        let bindings = load_bindings(Some(path.as_path())).expect("parses");
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[0].request, Request::Focus(Direction::Left));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn empty_set_is_not_the_same_as_missing() {
         let bindings = parse_binding_map(r#"{"q": "close"}"#).expect("parses");
         assert!(match_key(&event(KeyName::Letter('q'), &[]), &bindings).is_some());
-        assert!(!BTreeSet::from([Modifier::Shift]).is_empty());
+        assert_eq!(BTreeSet::from([Modifier::Shift]).len(), 1);
     }
 }

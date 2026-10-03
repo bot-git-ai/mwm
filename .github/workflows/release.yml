@@ -1,0 +1,113 @@
+# Publishes a release for every push to master. Nobody has to tag anything.
+#
+# Each build gets its own tag, named after the commit it was built from, so the
+# releases form a permanent archive: with release immutability enabled the tag
+# and the files are locked at publication, and a tag name is never reused. The
+# newest release is marked as the latest one, which is the only part that moves.
+#
+# Pushing a `v*` tag yourself is still supported, and is the way to pin a
+# version: it gets the same treatment and is equally immutable.
+name: release
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# One release at a time, so a new master cannot race an in-flight publish.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build and test
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -W clippy::pedantic -D warnings
+          cargo test
+          cargo build --release --locked
+
+      - name: Assemble the archive
+        run: |
+          mkdir -p dist
+          cp target/release/mwm dist/mwm-aarch64-apple-darwin
+          cp LICENSE.md README.md dist/
+          (cd dist && tar -czf ../mwm-aarch64-apple-darwin.tar.gz .)
+
+      # A tag you pushed yourself keeps its name; a build from master is named
+      # after its commit, so every release is distinguishable and nothing is
+      # ever overwritten.
+      - name: Choose the release tag
+        id: tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHORT_SHA: ${{ github.sha }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            tag="$REF_NAME"
+          else
+            tag="build-$SHORT_SHA"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Publishing as $tag"
+
+      - name: Write the release notes
+        env:
+          SHORT_SHA: ${{ github.sha }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          {
+            echo "Build of \\`master\\` at [\\`$SHORT_SHA\\`](${{ github.server_url }}/${{ github.repository }}/commit/$SHORT_SHA)."
+            echo
+            echo '```'
+            git log -1 --pretty=%s
+            echo '```'
+            echo
+            echo "Download \\`mwm-aarch64-apple-darwin.tar.gz\\` from the assets below, then:"
+            echo
+            echo '```sh'
+            echo "cargo install --path ."
+            echo '```'
+          } > notes.md
+          cat notes.md
+
+      # Draft first, assets second, publish last: once a release is published
+      # it is immutable, so the files must all be in place before that happens.
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          SHORT_SHA: ${{ github.sha }}
+        run: |
+          gh release create "$TAG" \
+            --target "$SHORT_SHA" \
+            --title "$TAG" \
+            --notes-file notes.md \
+            --draft
+
+      - name: Attach the archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: gh release upload "$TAG" mwm-aarch64-apple-darwin.tar.gz
+
+      - name: Publish it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gh release edit "$TAG" --draft=false --latest
+          echo "Published $TAG. Its tag and files are now immutable."

@@ -1239,7 +1239,7 @@ mod tests {
         assert!(!modifiers.contains(&Modifier::Ctrl));
         assert!(modifiers_from_flags(K_CG_EVENT_FLAG_MASK_ALTERNATE).contains(&Modifier::Alt));
         assert!(modifiers_from_flags(K_CG_EVENT_FLAG_MASK_CONTROL).contains(&Modifier::Ctrl));
-        assert!(modifiers_from_flags(0).is_empty());
+        assert_eq!(modifiers_from_flags(0).len(), 0);
     }
 
     #[test]

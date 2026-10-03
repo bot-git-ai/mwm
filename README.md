@@ -76,8 +76,16 @@ talks to the running daemon.
 
 ## Your own keybindings
 
-Pass a JSON file to the daemon to replace the defaults. It maps a chord to a
-command, using the commands from the table above:
+To replace the defaults, put a `keybindings.json` in your configuration
+directory:
+
+```sh
+$XDG_CONFIG_HOME/mwm/keybindings.json      # usually ~/.config/mwm/keybindings.json
+```
+
+If that file exists, mwm uses it instead of the defaults; if it does not, the
+defaults apply and there is nothing to do. The file maps a chord to a command,
+using the commands from the table above:
 
 ```json
 {
@@ -88,12 +96,45 @@ command, using the commands from the table above:
 }
 ```
 
-```sh
-mwm daemon --keybindings ~/mwm-keybindings.json
-```
-
 Chord modifiers may be written as `cmd`, `ctrl`, `alt` and `shift`, with
 either `-` or `+` between the parts (`shift-cmd-left`, `shift+cmd+left`).
+
+You can also point the daemon at a specific file, which is useful for testing
+an alternative set without replacing the one you use:
+
+```sh
+mwm daemon --keybindings /path/to/keybindings.json
+```
+
+## Releases
+
+Every push to `master` publishes a release automatically — there is nothing to
+tag by hand. Each build is released under a tag naming the commit it was built
+from, and those releases accumulate into a permanent archive you can go back to.
+
+**Installing the newest build:** use the release marked *Latest* — it is always
+the tip of `master`.
+
+```sh
+gh release download --repo wdomitrz/mwm --pattern 'mwm-aarch64-apple-darwin.tar.gz'
+tar -xzf mwm-aarch64-apple-darwin.tar.gz
+cargo install --path .
+```
+
+Once published, a release's files and tag cannot be changed or deleted: they are
+locked, and the tag name is never reused. Each release also carries a
+cryptographically verifiable attestation, so you can check that what you
+downloaded is exactly what was published.
+
+If you want a name you can cite rather than a commit hash, push a `v*` tag and
+it gets the same treatment:
+
+```sh
+git tag v1.1.0 && git push origin v1.1.0
+```
+
+The title and notes of a published release can still be edited, and the *Latest*
+marker moves as `master` advances; the binary and its tag do not.
 
 ## Troubleshooting
 
