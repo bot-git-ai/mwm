@@ -108,18 +108,33 @@ mwm daemon --keybindings /path/to/keybindings.json
 
 ## Releases
 
-Every `v*` tag builds a release automatically: the binary is built, packaged
-with the license and this file, and published with notes generated from the
-commits since the previous tag.
+Every push to `master` publishes a release automatically — there is nothing to
+tag by hand. Each build is released under a tag naming the commit it was built
+from, and those releases accumulate into a permanent archive you can go back to.
+
+**Installing the newest build:** use the release marked *Latest* — it is always
+the tip of `master`.
+
+```sh
+gh release download --repo wdomitrz/mwm --pattern 'mwm-aarch64-apple-darwin.tar.gz'
+tar -xzf mwm-aarch64-apple-darwin.tar.gz
+cargo install --path .
+```
+
+Once published, a release's files and tag cannot be changed or deleted: they are
+locked, and the tag name is never reused. Each release also carries a
+cryptographically verifiable attestation, so you can check that what you
+downloaded is exactly what was published.
+
+If you want a name you can cite rather than a commit hash, push a `v*` tag and
+it gets the same treatment:
 
 ```sh
 git tag v1.1.0 && git push origin v1.1.0
 ```
 
-Once a release is published its tag and its files cannot be changed or deleted:
-the repository protects release tags. To try a new version before committing to
-it, use a pre-release (`v1.1.0-rc1`) — those are ordinary tags and can be
-replaced until you cut the real one.
+The title and notes of a published release can still be edited, and the *Latest*
+marker moves as `master` advances; the binary and its tag do not.
 
 ## Troubleshooting
 
