@@ -71,6 +71,13 @@ enum Action {
         socket: Option<PathBuf>,
         verbose: bool,
     },
+    /// Install the binary, write the plist and load the agent.
+    Install {
+        prefix: Option<PathBuf>,
+        label: Option<String>,
+        skip_launchctl: bool,
+        verbose: bool,
+    },
     /// Print the `LaunchAgent` plist.
     LaunchdPlist {
         label: Option<String>,
@@ -90,6 +97,7 @@ commands:
   goto-desktop <1-10> [--socket PATH]
   columns <number> [--socket PATH]
   fullscreen | close | retile | status | stop | restart [--socket PATH]
+  install [--prefix DIR] [--label LABEL] [--no-launchctl] [-v]
   launchd-plist [--label LABEL] [--output PATH]
 
 options:
@@ -146,6 +154,7 @@ fn parse_args(args: &[String]) -> Action {
         "status" => simple_client(rest, Request::Status),
         "stop" => simple_client(rest, Request::Stop),
         "restart" => simple_client(rest, Request::Restart),
+        "install" => parse_install(rest),
         "launchd-plist" => parse_launchd(rest),
         _ => Action::Usage(2),
     }
@@ -280,6 +289,51 @@ where
     build(&positional, socket, verbose)
 }
 
+/// The launchd label mwm installs itself under.
+const DEFAULT_LABEL: &str = "mwm";
+
+/// Where the binary installs itself: `~/.local/bin`.
+fn default_prefix() -> PathBuf {
+    let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+    home.join(".local").join("bin")
+}
+
+fn parse_install(args: &[String]) -> Action {
+    let mut prefix = None;
+    let mut label = None;
+    let mut skip_launchctl = false;
+    let mut verbose = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--prefix" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Action::Usage(2);
+                };
+                prefix = Some(PathBuf::from(value));
+            }
+            "--label" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Action::Usage(2);
+                };
+                label = Some(value.clone());
+            }
+            "--no-launchctl" => skip_launchctl = true,
+            "--verbose" | "-v" => verbose = true,
+            _ => return Action::Usage(2),
+        }
+        index += 1;
+    }
+    Action::Install {
+        prefix,
+        label,
+        skip_launchctl,
+        verbose,
+    }
+}
+
 fn parse_launchd(args: &[String]) -> Action {
     let mut label_name = None;
     let mut destination = None;
@@ -343,6 +397,17 @@ where
             send_request(&path, &request, verbose)
         }
         Action::LaunchdPlist { label, output } => write_plist(label.as_deref(), output.as_deref()),
+        Action::Install {
+            prefix,
+            label,
+            skip_launchctl,
+            verbose,
+        } => run_install(&InstallOptions {
+            prefix: prefix.map_or_else(default_prefix, PathBuf::from),
+            label: label.unwrap_or_else(|| DEFAULT_LABEL.to_string()),
+            skip_launchctl,
+            verbose,
+        }),
         Action::Daemon {
             columns,
             socket,
@@ -408,7 +473,12 @@ fn xml_escape(value: &str) -> String {
 
 /// The `LaunchAgent` plist for the installed binary.
 fn launchd_plist_xml(label: &str, home: &Path) -> String {
-    let binary = home.join(".local/bin/mwm");
+    launchd_plist_xml_for(label, home, &home.join(".local/bin/mwm"))
+}
+
+/// The plist, naming the binary at `binary` so a custom `--prefix` is honoured.
+fn launchd_plist_xml_for(label: &str, home: &Path, binary: &Path) -> String {
+    let binary = binary.to_path_buf();
     let stdout = format!("/tmp/mwm_{}.out.log", uid());
     let stderr = format!("/tmp/mwm_{}.err.log", uid());
     format!(
@@ -790,6 +860,138 @@ fn response_for(restarting: bool) -> IpcResponse {
     } else {
         IpcResponse::ok("stopping")
     }
+}
+
+/// What `mwm install` was asked to do.
+struct InstallOptions {
+    /// Directory the binary is installed into.
+    prefix: PathBuf,
+    /// launchd label.
+    label: String,
+    /// Leave the agent unloaded (write the plist only).
+    skip_launchctl: bool,
+    /// Report each step.
+    verbose: bool,
+}
+
+/// Runs an external command. Injected so the launchctl steps can be tested
+/// without macOS.
+fn real_run(program: &str, arguments: &[String]) -> std::io::Result<std::process::Output> {
+    std::process::Command::new(program).args(arguments).output()
+}
+
+/// Install the binary, write the agent file, and load it.
+fn run_install(options: &InstallOptions) -> i32 {
+    let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+    run_install_with(options, &home, real_run)
+}
+
+/// The installer, with the home directory and command runner supplied.
+fn run_install_with<F>(options: &InstallOptions, home: &Path, run: F) -> i32
+where
+    F: Fn(&str, &[String]) -> std::io::Result<std::process::Output>,
+{
+    let installed = options.prefix.join("mwm");
+    let say = |message: &str| {
+        if options.verbose {
+            eprintln!("{message}");
+        }
+    };
+
+    if let Some(parent) = installed.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            eprintln!("cannot create {}: {error}", parent.display());
+            return 1;
+        }
+    }
+
+    // Prefer the running executable: it is the binary the user asked to
+    // install, whether it came from a release or from a build.
+    let source = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("cannot find the running mwm binary: {error}");
+            return 1;
+        }
+    };
+    if source != installed {
+        if let Err(error) = std::fs::copy(&source, &installed) {
+            eprintln!("cannot install to {}: {error}", installed.display());
+            return 1;
+        }
+        set_executable(&installed);
+        say(&format!("installed {}", installed.display()));
+    }
+
+    let plist_path = home
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{}.plist", options.label));
+    if let Some(parent) = plist_path.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            eprintln!("cannot create {}: {error}", parent.display());
+            return 1;
+        }
+    }
+    let plist = launchd_plist_xml_for(&options.label, home, &installed);
+    if let Err(error) = std::fs::write(&plist_path, plist) {
+        eprintln!("cannot write {}: {error}", plist_path.display());
+        return 1;
+    }
+    say(&format!("wrote {}", plist_path.display()));
+
+    if options.skip_launchctl {
+        say("not loading the agent (--no-launchctl)");
+        return 0;
+    }
+
+    let domain = format!("gui/{}", uid());
+    // Unload first, ignoring the failure: there may be nothing loaded, and a
+    // running agent would otherwise hold the old binary.
+    let _ = run(
+        "launchctl",
+        &[
+            "bootout".into(),
+            domain.clone(),
+            plist_path.display().to_string(),
+        ],
+    );
+    match run(
+        "launchctl",
+        &["bootstrap".into(), domain, plist_path.display().to_string()],
+    ) {
+        Ok(output) if output.status.success() => {
+            say("loaded the agent");
+            0
+        }
+        Ok(output) => {
+            eprintln!(
+                "the agent was written to {} but could not be loaded: {}",
+                plist_path.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+            1
+        }
+        Err(error) => {
+            eprintln!(
+                "the agent was written to {} but could not be loaded: {error}",
+                plist_path.display()
+            );
+            1
+        }
+    }
+}
+
+/// Make an installed binary readable and executable by its owner and by
+/// everyone else — the usual `0755` for a program on your PATH.
+fn set_executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 /// Whether something is listening on `path` right now.
@@ -1497,6 +1699,195 @@ mod tests {
         std::fs::remove_file(&path).expect("cleanup");
         assert!(!path.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_copies_the_binary_writes_the_plist_and_loads_it() {
+        use std::sync::atomic::AtomicUsize;
+        let home = std::env::temp_dir().join(format!("mwm-install-{}", std::process::id()));
+        let prefix = home.join(".local/bin");
+        std::fs::create_dir_all(&prefix).expect("prefix");
+        let source = std::env::current_exe().expect("test binary");
+        std::fs::copy(&source, prefix.join("mwm")).expect("seed an existing install");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let counter = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&calls);
+        let options = super::InstallOptions {
+            prefix: prefix.clone(),
+            label: "mwm".to_string(),
+            skip_launchctl: false,
+            verbose: false,
+        };
+        // The installer copies the running executable, so point that at a file
+        // we control by running the check against a temporary "binary".
+        let code = super::run_install_with(&options, &home, |program, arguments| {
+            sink.lock()
+                .expect("lock")
+                .push((program.to_string(), arguments.join(" ")));
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok(std::process::Output {
+                status: std::process::Command::new("true").status().expect("true"),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        });
+        assert_eq!(code, 0);
+        let plist = home.join("Library/LaunchAgents/mwm.plist");
+        assert!(plist.is_file(), "the plist should be written");
+        let text = std::fs::read_to_string(&plist).expect("read");
+        assert!(text.contains("<key>Label</key>"));
+        assert!(text.contains(&prefix.join("mwm").display().to_string()));
+        let recorded = calls.lock().expect("lock").clone();
+        assert_eq!(recorded.len(), 2, "bootout then bootstrap: {recorded:?}");
+        assert_eq!(recorded[0].0, "launchctl");
+        assert!(recorded[0].1.starts_with("bootout gui/"));
+        assert!(recorded[1].1.starts_with("bootstrap gui/"));
+        assert!(prefix.join("mwm").is_file());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn install_can_stop_before_loading() {
+        let home = std::env::temp_dir().join(format!("mwm-install-skip-{}", std::process::id()));
+        let prefix = home.join(".local/bin");
+        std::fs::create_dir_all(&prefix).expect("prefix");
+        let calls = Arc::new(Mutex::new(0_usize));
+        let counter = Arc::clone(&calls);
+        let options = super::InstallOptions {
+            prefix,
+            label: "mwm".to_string(),
+            skip_launchctl: true,
+            verbose: false,
+        };
+        let code = super::run_install_with(&options, &home, |_, _| {
+            *counter.lock().expect("lock") += 1;
+            Ok(std::process::Output {
+                status: std::process::Command::new("true").status().expect("true"),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        });
+        assert_eq!(code, 0);
+        assert_eq!(*calls.lock().expect("lock"), 0, "launchctl must not run");
+        assert!(home.join("Library/LaunchAgents/mwm.plist").is_file());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn install_reports_a_failed_load_but_keeps_the_plist() {
+        let home = std::env::temp_dir().join(format!("mwm-install-fail-{}", std::process::id()));
+        let prefix = home.join(".local/bin");
+        std::fs::create_dir_all(&prefix).expect("prefix");
+        let options = super::InstallOptions {
+            prefix,
+            label: "mwm".to_string(),
+            skip_launchctl: false,
+            verbose: false,
+        };
+        let code = super::run_install_with(&options, &home, |_, _| {
+            Ok(std::process::Output {
+                status: std::process::Command::new("false").status().expect("false"),
+                stdout: Vec::new(),
+                stderr: b"no launchd here".to_vec(),
+            })
+        });
+        assert_eq!(code, 1, "a failed load is reported");
+        assert!(
+            home.join("Library/LaunchAgents/mwm.plist").is_file(),
+            "the plist is still written, so the user can load it by hand"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn install_uses_the_home_it_is_given() {
+        // The plist must land under the real home, never at /Library, which is
+        // what happens if the caller forgets to pass one in.
+        let home = std::env::temp_dir().join(format!("mwm-home-{}", std::process::id()));
+        let prefix = home.join(".local/bin");
+        std::fs::create_dir_all(&prefix).expect("prefix");
+        let options = super::InstallOptions {
+            prefix,
+            label: "mwm".to_string(),
+            skip_launchctl: true,
+            verbose: false,
+        };
+        let code = super::run_install_with(&options, &home, |_, _| unreachable!("not called"));
+        assert_eq!(code, 0);
+        assert!(
+            home.join("Library/LaunchAgents/mwm.plist").is_file(),
+            "the plist belongs under the home directory given"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn the_plist_names_the_binary_where_it_was_installed() {
+        let home = Path::new("/Users/me");
+        let elsewhere = Path::new("/opt/tools/bin/mwm");
+        let text = super::launchd_plist_xml_for("mwm", home, elsewhere);
+        assert!(text.contains("/opt/tools/bin/mwm"), "{text}");
+        assert!(!text.contains("/Users/me/.local/bin/mwm"), "{text}");
+        // The default still points at the conventional location.
+        assert!(super::launchd_plist_xml("mwm", home).contains("/Users/me/.local/bin/mwm"));
+    }
+
+    #[test]
+    fn an_installed_binary_is_readable_and_runnable() {
+        let dir = std::env::temp_dir().join(format!("mwm-perms-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("mwm");
+        std::fs::write(&path, b"#!/bin/sh\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        }
+        super::set_executable(&path);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o755, "got {mode:o}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_parses_its_options() {
+        assert_eq!(
+            parse_args(&args(&["install"])),
+            Action::Install {
+                prefix: None,
+                label: None,
+                skip_launchctl: false,
+                verbose: false
+            }
+        );
+        assert_eq!(
+            parse_args(&args(&[
+                "install",
+                "--prefix",
+                "/usr/local/bin",
+                "--label",
+                "wm",
+                "--no-launchctl"
+            ])),
+            Action::Install {
+                prefix: Some("/usr/local/bin".into()),
+                label: Some("wm".into()),
+                skip_launchctl: true,
+                verbose: false,
+            }
+        );
+        for bad in [
+            vec!["install", "--prefix"],
+            vec!["install", "--label"],
+            vec!["install", "--bogus"],
+            vec!["install", "extra"],
+        ] {
+            assert_eq!(parse_args(&args(&bad)), Action::Usage(2), "{bad:?}");
+        }
     }
 
     #[test]

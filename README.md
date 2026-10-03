@@ -18,25 +18,43 @@ right; with `1` every window stacks in a single column.
 
 ## Install
 
+Download the `mwm` binary from the [latest release](https://github.com/wdomitrz/mwm/releases/latest)
+and let it install itself — it puts itself on your `PATH` and sets up the
+service:
+
+```sh
+install -m 0755 mwm-aarch64-apple-darwin ~/.local/bin/mwm
+~/.local/bin/mwm install
+```
+
+`mwm install` copies the running binary into `~/.local/bin` (use `--prefix` to
+choose elsewhere), writes the service file, and loads it. Pass `--no-launchctl`
+if you would rather load it yourself later.
+
+Building from a checkout works too, and needs no extra steps afterwards:
+
 ```sh
 cargo install --path .
+mwm install
 ```
 
 ## Run
 
-Generate the LaunchAgent file and load it:
+`mwm install` has already loaded mwm as a service, so it starts with your Mac.
+Grant the Accessibility permission to the installed `mwm` binary in
+**System Settings → Privacy & Security → Accessibility**, then start it again:
 
 ```sh
-mwm launchd-plist > ~/Library/LaunchAgents/mwm.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/mwm.plist
+mwm restart
 ```
 
-Grant the Accessibility permission to the installed `mwm` binary in
-**System Settings → Privacy & Security → Accessibility**, then start it
-again. To stop it:
+macOS grants that permission per binary, so it has to be re-granted after
+updating mwm.
+
+To stop mwm:
 
 ```sh
-launchctl bootout gui/$(id -u)/mwm
+mwm stop
 ```
 
 The daemon listens on `$XDG_RUNTIME_DIR/mwm-$UID.sock`, or
@@ -56,6 +74,7 @@ talks to the running daemon.
 | `mwm retile` | re-apply the layout now |
 | `mwm status` | one-line status: columns, windows, socket |
 | `mwm stop` / `mwm restart` | stop or restart the daemon |
+| `mwm install` | install the binary, write the service file, load it |
 
 ## Default keybindings
 
@@ -105,6 +124,37 @@ an alternative set without replacing the one you use:
 ```sh
 mwm daemon --keybindings /path/to/keybindings.json
 ```
+
+## Releases
+
+Every push to `master` publishes a release — there is nothing to tag by hand.
+Each build is released under a tag naming the commit it was built from, and each
+release carries the `mwm` binary itself as its only file.
+
+**Installing the newest build:** take the release marked *Latest* — it is always
+the tip of `master`.
+
+```sh
+gh release download --repo wdomitrz/mwm --pattern 'mwm-aarch64-apple-darwin'
+install -m 0755 mwm-aarch64-apple-darwin ~/.local/bin/mwm
+```
+
+Then load it as a service, as described above.
+
+Once published, a release's file and tag cannot be changed or deleted: they are
+locked, and the tag name is never reused. Each release also carries a
+cryptographically verifiable attestation, so you can check that what you
+downloaded is exactly what was published.
+
+If you want a name you can cite rather than a commit hash, push a `v*` tag and
+it gets the same treatment:
+
+```sh
+git tag v1.1.0 && git push origin v1.1.0
+```
+
+The title and notes of a published release can still be edited, and the *Latest*
+marker moves as `master` advances; the binary and its tag do not.
 
 ## Troubleshooting
 
