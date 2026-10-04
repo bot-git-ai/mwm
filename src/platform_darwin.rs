@@ -323,12 +323,10 @@ fn ax_string(name: &str) -> CFStringRef {
     created
 }
 
-/// The AX value type for a CGPoint, asked of the framework by name.
 fn ax_value_cg_point() -> CFTypeRef {
     ax_string("AXValueCGPoint")
 }
 
-/// The AX value type for a CGSize.
 fn ax_value_cg_size() -> CFTypeRef {
     ax_string("AXValueCGSize")
 }
@@ -424,23 +422,23 @@ unsafe fn cf_number_to_i64(value: CFTypeRef) -> Option<i64> {
 
 /// macOS [`WindowSystem`] over AX + CoreGraphics.
 pub struct DarwinWindowSystem {
-    /// Live AX handles by window key; rebuilt on refresh.
+    /// Live AX handles by window key. Rebuilt wholesale on every refresh:
+    /// an AX handle is only as good as the last window list.
     ax_windows: HashMap<String, AxWindow>,
     /// Observer bookkeeping by pid; read in `refresh_observers` to decide
     /// which apps still need an observer.
     #[allow(dead_code)]
     observers: BTreeMap<Pid, ObserverEntry>,
-    /// Window-change callback shared into AX observer callbacks.
+    /// Shared into the AX observer callbacks, which run on the observer thread.
     on_change: Option<Arc<Mutex<Box<dyn FnMut() + Send>>>>,
-    /// Key callback shared into the CGEvent tap callback.
+    /// Shared into the CGEvent tap callback on the tap thread.
     on_key: Option<Arc<Mutex<Box<dyn FnMut(KeyEvent) -> bool + Send>>>>,
-    /// The event tap's thread and runloop.
     tap_thread: Option<JoinHandle<()>>,
+    /// The tap thread's runloop, as an address, so it can be stopped.
     tap_loop: Option<usize>,
-    /// The AX observers' thread and runloop.
     observer_thread: Option<JoinHandle<()>>,
     observer_loop: Option<usize>,
-    /// Sends attach requests to the observer thread.
+    /// Attach requests for the observer thread; empty until `install_observers`.
     attach_tx: Option<std::sync::mpsc::Sender<AttachRequest>>,
 }
 
@@ -472,7 +470,6 @@ impl Drop for AxWindow {
 struct ObserverEntry;
 
 impl DarwinWindowSystem {
-    /// A system with nothing installed yet.
     pub fn new() -> Self {
         Self {
             ax_windows: HashMap::new(),
@@ -543,7 +540,7 @@ impl DarwinWindowSystem {
     }
 
     /// Turn a raw (non-owning) AX window element into an owned handle plus
-    /// its stable key, if it looks like a manageable window.
+    /// its stable key, or `None` when the window is not one mwm tiles.
     unsafe fn build_ax_window(
         &self,
         pid: Pid,
@@ -587,7 +584,6 @@ impl DarwinWindowSystem {
         ))
     }
 
-    /// CGWindowList snapshot: (pid, window number) tuples of on-screen windows.
     fn collect_cg_windows(&self) -> Option<Vec<(Pid, i64)>> {
         unsafe {
             let list = CGWindowListCopyWindowInfo(
@@ -631,7 +627,6 @@ unsafe fn cg_window_pid_number(info: CFTypeRef) -> Option<(Pid, i64)> {
     (pid > 0 && number > 0).then_some((pid, number))
 }
 
-/// AX attribute helpers used across the module.
 impl DarwinWindowSystem {
     /// Copy an attribute value (owned) from an element.
     unsafe fn ax_get(element: AXUIElementRef, attribute: CFStringRef) -> Option<CfRef> {
@@ -655,19 +650,16 @@ impl DarwinWindowSystem {
         })
     }
 
-    /// The text of a CFString constant.
     unsafe fn cf_string(value: CFStringRef) -> String {
         cf_string_to_string(value as CFTypeRef)
     }
 
-    /// Read a string attribute.
     unsafe fn ax_get_string(element: AXUIElementRef, attribute: CFStringRef) -> String {
         Self::ax_get(element, attribute)
             .map(|v| cf_string_to_string(v.raw()))
             .unwrap_or_default()
     }
 
-    /// Read a bool attribute, defaulting false.
     unsafe fn ax_get_bool(element: AXUIElementRef, attribute: CFStringRef) -> bool {
         let Some(value) = Self::ax_get(element, attribute) else {
             return false;
@@ -679,6 +671,9 @@ impl DarwinWindowSystem {
     }
 
     /// Read the AX frame (position + size), already top-left origin.
+    ///
+    /// Returns `None` if either AX value is absent or will not decode, which
+    /// leaves the window out of the layout instead of guessing at a frame.
     unsafe fn ax_frame(element: AXUIElementRef) -> Option<Rect> {
         let position = Self::ax_get(element, ax_string("kAXPositionAttribute"))?;
         let size = Self::ax_get(element, ax_string("kAXSizeAttribute"))?;
@@ -709,13 +704,13 @@ impl DarwinWindowSystem {
         ))
     }
 
-    /// The AX window number, when the element exposes one.
     unsafe fn window_number(element: AXUIElementRef) -> Option<i64> {
         let value = Self::ax_get(element, ax_string("kAXWindowNumberAttribute"))?;
         cf_number_to_i64(value.raw())
     }
 
-    /// Set position and size in one call sequence.
+    /// Set position and size in one call sequence, releasing the temporary
+    /// AXValues on every path. Returns whether both writes were accepted.
     unsafe fn set_ax_frame(element: AXUIElementRef, frame: Rect) -> bool {
         let point = CGPoint {
             x: f64::from(frame.x),
@@ -753,7 +748,6 @@ impl DarwinWindowSystem {
     }
 }
 
-/// Trait implementation: queries and actions.
 impl WindowSystem for DarwinWindowSystem {
     fn refresh(&mut self) {
         self.refresh_observers();
@@ -1066,7 +1060,8 @@ impl DarwinWindowSystem {
             let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
             CFRunLoopAddSource(loop_ref, source, ax_string("kCFRunLoopCommonModes"));
             CGEventTapEnable(tap, true);
-            // CFRunLoopRun never returns; stopping the loop is what ends us.
+            // CFRunLoopRun never returns, so `stop_tap` ends this thread by
+            // calling CFRunLoopStop on `tap_loop` from the outside.
             CFRunLoopRun();
         });
         self.tap_thread = Some(handle);
@@ -1251,8 +1246,8 @@ mod tests {
                 height: 200.0,
             },
         };
-        // bottom-left origin screen 1000 tall: a full-height window at the
-        // bottom of the display starts at y = 0 in top-left coordinates.
+        // On a 1000-tall bottom-left-origin screen, a full-height window at the
+        // very bottom starts at y = 0 once converted to top-left origin.
         let converted = to_top_left_origin(rect, 1000.0);
         assert_eq!(converted, crate::types::Rect::new(0, 800, 100, 200));
     }
@@ -1260,7 +1255,8 @@ mod tests {
     #[test]
     fn desktop_key_codes_cover_ten_desktops() {
         assert_eq!(DESKTOP_KEY_CODES.len(), 10);
-        // every code distinct, and none colliding with the arrow range
+        // Every code must be distinct, and none may collide with the arrow
+        // range 0x7B..=0x7E or it would bind a desktop and an arrow at once.
         for (index, code) in DESKTOP_KEY_CODES.iter().enumerate() {
             assert!(
                 (0x11..=0x1E).contains(code),

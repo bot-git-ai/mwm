@@ -90,8 +90,7 @@ impl KeyName {
     }
 }
 
-/// Arrow-key codes on macOS (the `HIToolbox` virtual key codes), used by the macOS
-/// macOS key hook.
+/// Arrow-key `HIToolbox` virtual key codes, used by the macOS key hook.
 #[allow(dead_code)]
 pub mod darwin_key_codes {
     pub const LEFT: u8 = 0x7B;

@@ -14,7 +14,6 @@ use crate::types::{Modifier, ModifierSet};
 /// A key plus the modifiers that must be held with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyChord {
-    /// Modifiers held during the press.
     pub modifiers: ModifierSet,
     /// Canonical key name (`h`, `left`, `space`, `vk:0x7b`).
     pub key: String,
@@ -44,7 +43,8 @@ impl KeyChord {
         })
     }
 
-    /// Whether this chord matches an observed key press exactly.
+    /// Matches only when the key *and* the modifier set agree, so an extra
+    /// held modifier never triggers a binding.
     #[must_use]
     pub fn matches(&self, event: &KeyEvent) -> bool {
         self.key == event.key.as_str() && self.modifiers == event.modifiers
@@ -54,9 +54,7 @@ impl KeyChord {
 /// A chord bound to a command.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeyBinding {
-    /// The chord that triggers it.
     pub chord: KeyChord,
-    /// The command it runs.
     pub request: Request,
 }
 
@@ -185,8 +183,6 @@ pub fn match_key<'a>(event: &KeyEvent, bindings: &'a [KeyBinding]) -> Option<&'a
         .map(|binding| &binding.request)
 }
 
-/// Build the bindings the daemon should use: the file's contents when given,
-/// otherwise the built-in defaults.
 /// Where mwm looks for a keybindings file when none is given on the command
 /// line: `$XDG_CONFIG_HOME/mwm/keybindings.json`, or `~/.config/mwm/keybindings.json`
 /// when that variable is not set.

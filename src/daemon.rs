@@ -57,7 +57,6 @@ unsafe extern "C" {
 /// What the CLI decided to do.
 #[derive(Debug, Clone, PartialEq)]
 enum Action {
-    /// Run the daemon.
     Daemon {
         columns: f64,
         socket: Option<PathBuf>,
@@ -65,25 +64,22 @@ enum Action {
         no_keybindings: bool,
         verbose: bool,
     },
-    /// Send one request to a running daemon.
     Send {
         request: Request,
         socket: Option<PathBuf>,
         verbose: bool,
     },
-    /// Install the binary, write the plist and load the agent.
     Install {
         prefix: Option<PathBuf>,
         label: Option<String>,
         skip_launchctl: bool,
         verbose: bool,
     },
-    /// Print the `LaunchAgent` plist.
     LaunchdPlist {
         label: Option<String>,
         output: Option<PathBuf>,
     },
-    /// Print usage; `code` is the exit status.
+    /// Print usage; `code` is the exit status (0 for `--help`, else 2).
     Usage(i32),
 }
 
@@ -105,7 +101,8 @@ options:
   -v, --verbose  print the daemon's answer
 ";
 
-/// Collapse the `Result` the client-option builder returns.
+/// Collapse the `Result` the client-option builder returns, so a bad
+/// argument reads as an `Action::Usage` rather than a separate error type.
 fn flatten(result: Result<Action, Action>) -> Action {
     result.unwrap_or_else(|action| action)
 }
@@ -471,7 +468,7 @@ fn xml_escape(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// The `LaunchAgent` plist for the installed binary.
+/// The plist for the conventional install location under `home`.
 fn launchd_plist_xml(label: &str, home: &Path) -> String {
     launchd_plist_xml_for(label, home, &home.join(".local/bin/mwm"))
 }
@@ -531,11 +528,10 @@ struct DaemonConfig {
 /// Something that can happen to the daemon.
 #[derive(Debug)]
 enum Event {
-    /// A request arrived from a key press.
+    /// A key press the binding map translated into a request.
     Request(Request),
     /// A client sent a raw payload and waits for an answer.
     Client(IpcMessage),
-    /// Windows changed on screen.
     WindowsChanged,
 }
 
@@ -549,21 +545,22 @@ struct IpcMessage {
 /// What the loop should do after handling an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Next {
-    /// Nothing further is due.
     Idle,
-    /// Re-apply the layout now.
     Retile,
 }
 
 /// The debounce state machine, kept pure so it can be tested without time.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Scheduler {
-    /// When a retile should run, if one is pending.
+    /// `Some` when a retile is pending, holding the earliest deadline it may
+    /// run at. A later event never pulls that deadline earlier.
     due_ms: Option<u64>,
 }
 
 impl Scheduler {
-    /// Feed an event and return the action it implies.
+    /// Feed an event and return the action it implies. A window change pushes
+    /// the deadline out to `now + QUIET_MS`, which is the debounce: a burst of
+    /// them produces one retile once the burst stops.
     fn update(&mut self, now_ms: u64, event: &Event) -> Next {
         match event {
             Event::WindowsChanged => {
@@ -652,7 +649,8 @@ impl Core {
         format!("tiled {placed} of {} windows", windows.len())
     }
 
-    /// Remember how the user sized each column before we take over.
+    /// Record each window's current height as its row weight, so a column the
+    /// user sized by hand is not immediately flattened by the next retile.
     fn remember_row_weights(
         &mut self,
         columns: &[Vec<String>],
@@ -800,12 +798,14 @@ impl Core {
     }
 }
 
-/// Whether a window is large enough to be tiled rather than left alone.
+/// Whether a window is large enough to tile. Anything below the minimum
+/// keeps the geometry its app gave it.
 fn is_tilable(window: &WindowInfo) -> bool {
     window.frame.width >= MIN_WINDOW_WIDTH && window.frame.height >= MIN_WINDOW_HEIGHT
 }
 
-/// How a window is named in messages.
+/// The window's title for messages, falling back to its key when the app
+/// exposes no title.
 fn label_of(window: &WindowInfo) -> String {
     if window.title.is_empty() {
         window.key.clone()
@@ -814,7 +814,9 @@ fn label_of(window: &WindowInfo) -> String {
     }
 }
 
-/// Bind the socket, refusing to run twice on the same path.
+/// Bind the socket. A path that still has a listener on it means a daemon
+/// is already running and this one must refuse; a path with nobody listening
+/// is a stale socket from a crash and may be replaced.
 fn bind_socket(path: &Path) -> Result<UnixListener, String> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -864,13 +866,10 @@ fn response_for(restarting: bool) -> IpcResponse {
 
 /// What `mwm install` was asked to do.
 struct InstallOptions {
-    /// Directory the binary is installed into.
     prefix: PathBuf,
-    /// launchd label.
     label: String,
     /// Leave the agent unloaded (write the plist only).
     skip_launchctl: bool,
-    /// Report each step.
     verbose: bool,
 }
 
@@ -880,7 +879,8 @@ fn real_run(program: &str, arguments: &[String]) -> std::io::Result<std::process
     std::process::Command::new(program).args(arguments).output()
 }
 
-/// Install the binary, write the agent file, and load it.
+/// Install the binary, write the agent file, and load it, using `$HOME` and
+/// the real command runner.
 fn run_install(options: &InstallOptions) -> i32 {
     let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
     run_install_with(options, &home, real_run)
@@ -1003,9 +1003,8 @@ fn socket_answers(path: &Path) -> bool {
     true
 }
 
-/// Serve clients until the daemon stops.
-#[allow(clippy::too_many_lines)]
 /// Start the daemon and serve until it is told to stop.
+#[allow(clippy::too_many_lines)]
 fn run_daemon(config: &DaemonConfig) -> i32 {
     let system = system();
     if !system.accessibility_trusted() {
@@ -1133,6 +1132,9 @@ fn spawn_server(listener: UnixListener, event_tx: &Sender<Event>) {
 }
 
 /// Read one request from a client, answer it, and close the connection.
+///
+/// The work happens on the event loop, so the answer arrives through `reply_rx`
+/// rather than being computed here.
 fn serve_one(stream: &UnixStream, event_tx: &Sender<Event>) {
     let mut reader = BufReader::new(match stream.try_clone() {
         Ok(clone) => clone,
@@ -1160,7 +1162,8 @@ fn serve_one(stream: &UnixStream, event_tx: &Sender<Event>) {
     }
 }
 
-/// Translate a key press into a request, when the map has one.
+/// Translate a key press into a request, when the map has one. Returning
+/// `true` consumes the key press so it never reaches the focused app.
 fn install_key_hook(core: &mut Core, bindings: &[KeyBinding], event_tx: &Sender<Event>) {
     let bindings = bindings.to_vec();
     let tx = event_tx.clone();
@@ -1718,8 +1721,8 @@ mod tests {
             skip_launchctl: false,
             verbose: false,
         };
-        // The installer copies the running executable, so point that at a file
-        // we control by running the check against a temporary "binary".
+        // `run_install_with` copies whatever binary it finds to the prefix, so
+        // this asserts against a temporary "binary" rather than the real one.
         let code = super::run_install_with(&options, &home, |program, arguments| {
             sink.lock()
                 .expect("lock")
@@ -1801,8 +1804,8 @@ mod tests {
 
     #[test]
     fn install_uses_the_home_it_is_given() {
-        // The plist must land under the real home, never at /Library, which is
-        // what happens if the caller forgets to pass one in.
+        // The plist must land under the home directory it is given, never at
+        // `/Library`, which is what a missing `$HOME` would otherwise produce.
         let home = std::env::temp_dir().join(format!("mwm-home-{}", std::process::id()));
         let prefix = home.join(".local/bin");
         std::fs::create_dir_all(&prefix).expect("prefix");
@@ -1828,7 +1831,7 @@ mod tests {
         let text = super::launchd_plist_xml_for("mwm", home, elsewhere);
         assert!(text.contains("/opt/tools/bin/mwm"), "{text}");
         assert!(!text.contains("/Users/me/.local/bin/mwm"), "{text}");
-        // The default still points at the conventional location.
+        // The default wrapper still names the conventional location.
         assert!(super::launchd_plist_xml("mwm", home).contains("/Users/me/.local/bin/mwm"));
     }
 

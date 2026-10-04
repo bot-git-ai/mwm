@@ -87,7 +87,6 @@ pub struct IpcResponse {
 }
 
 impl IpcResponse {
-    /// A successful response.
     #[must_use]
     pub fn ok(message: impl Into<String>) -> Self {
         Self {
@@ -96,7 +95,6 @@ impl IpcResponse {
         }
     }
 
-    /// A failed response.
     #[must_use]
     pub fn err(message: impl Into<String>) -> Self {
         Self {

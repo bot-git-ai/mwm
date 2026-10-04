@@ -20,7 +20,6 @@ pub const MIN_WINDOW_HEIGHT: i32 = 40;
 /// Layout configuration validated at use sites.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayoutConfig {
-    /// Number of columns as a fraction; at least 1.0.
     pub columns: f64,
 }
 
@@ -52,7 +51,8 @@ impl LayoutConfig {
     }
 }
 
-/// Floor one pixel share to `i32`; every share is within a screen width.
+/// Floor one pixel share to `i32`. Safe: every share is within a screen width,
+/// so the truncation cannot lose a meaningful value.
 #[allow(clippy::cast_possible_truncation)]
 fn floor_to_i32(share: f64) -> i32 {
     share.floor() as i32
@@ -78,15 +78,14 @@ pub fn partition_i32(total: i32, weights: &[f64]) -> Vec<i32> {
         }
         return sizes;
     }
-    // Pixel arithmetic: `total` is a screen dimension and every share of it
-    // is within i32, so these casts cannot lose a meaningful value.
     let raw: Vec<f64> = weights
         .iter()
         .map(|weight| f64::from(total) * weight / weight_sum)
         .collect();
     let mut sizes: Vec<i32> = raw.iter().copied().map(floor_to_i32).collect();
     let mut remainder = total - sizes.iter().sum::<i32>();
-    // largest fractional part first, ties to the lower index
+    // Largest fractional part first, ties to the lower index: this keeps the
+    // off-by-a-pixel spreads at the far edge, where they are least visible.
     let mut order: Vec<usize> = (0..count).collect();
     order.sort_by(|&a, &b| {
         let fa = raw[a].fract();
@@ -138,7 +137,10 @@ pub fn split_columns(frame: Rect, count: usize, columns: f64) -> Vec<Rect> {
         .collect()
 }
 
-/// Split `frame` vertically into `count` row frames, optionally weighted.
+/// Split `frame` vertically into `count` row frames.
+///
+/// `weights` is honoured only when it holds exactly `count` positive, finite
+/// values; anything else falls back to an even split.
 #[must_use]
 pub fn split_rows(frame: Rect, count: usize, weights: Option<&[f64]>) -> Vec<Rect> {
     if count == 0 {
@@ -197,11 +199,14 @@ mod tests_partition {
 /// fullscreened, and remembered row heights.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct LayoutState {
-    /// Per screen: ordered columns of window keys.
+    /// Per screen: ordered columns of window keys. Empty columns are pruned,
+    /// so a column that exists always holds at least one window key.
     pub columns_by_screen: BTreeMap<String, Vec<Vec<String>>>,
-    /// Windows the user fullscreened through mwm.
+    /// At most one key per screen: fullscreening another window drops the old
+    /// one, which is why `toggle_fullscreen` clears its siblings.
     pub fullscreen_keys: BTreeSet<String>,
-    /// Row height weights remembered from user resizing, by window key.
+    /// Row height weights remembered from user resizing, by window key — a
+    /// weight the user set by dragging a border, not one mwm chose.
     pub row_weights_by_key: BTreeMap<String, f64>,
 }
 
@@ -211,7 +216,8 @@ impl LayoutState {
         Self::default()
     }
 
-    /// Drop state for windows and screens that no longer exist.
+    /// Drop state for windows and screens that no longer exist, so the layout
+    /// does not accumulate keys for windows that have closed.
     pub fn keep_only(
         &mut self,
         visible_keys: &BTreeSet<String>,
@@ -309,9 +315,7 @@ mod tests_split {
 /// The layout engine: applies the column model to real window sets.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayoutEngine {
-    /// Layout state: columns per screen, fullscreen set, row weights.
     pub state: LayoutState,
-    /// Column configuration.
     pub config: LayoutConfig,
 }
 
@@ -476,7 +480,9 @@ impl LayoutEngine {
         if !changed {
             return false;
         }
-        // For left/right moves the insert of a fresh column shifts indices.
+        // The left/right pass above may have inserted a fresh column, which
+        // shifts every index, so the edge case is re-derived here from the new
+        // `columns` rather than reusing `at_edge` from before the insert.
         match direction {
             Direction::Left | Direction::Right => {
                 let forward = direction == Direction::Right;
@@ -515,7 +521,8 @@ impl LayoutEngine {
     }
 
     /// Toggle fullscreen for a key on a screen. Returns true when the
-    /// window is now fullscreen.
+    /// window is now fullscreen. Only one window per screen is fullscreened,
+    /// so going fullscreen clears any sibling.
     pub fn toggle_fullscreen(&mut self, key: &str, same_screen_keys: &[String]) -> bool {
         if self.state.fullscreen_keys.contains(key) {
             self.state.fullscreen_keys.remove(key);
@@ -576,7 +583,8 @@ impl LayoutEngine {
     }
 }
 
-/// Nearest window purely by geometry, used when the grid has no opinion.
+/// Nearest window purely by geometry — the fallback for a window mwm has no
+/// grid position for, so a focus command still moves somewhere sensible.
 #[must_use]
 fn geometric_focus_target<'a>(
     current: &WindowInfo,

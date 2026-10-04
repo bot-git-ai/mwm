@@ -12,8 +12,8 @@ pub struct Rect {
     pub height: i32,
 }
 
-/// Geometry helpers: some are only used by the macOS platform layer and the
-/// layout tests, so a non-macOS build would otherwise warn.
+// The `#[allow]` covers helpers used only by the macOS platform layer and the
+// layout tests, which a non-macOS build would otherwise flag as dead.
 #[allow(dead_code)]
 impl Rect {
     #[must_use]
@@ -157,7 +157,8 @@ pub type ModifierSet = BTreeSet<Modifier>;
 /// One attached display, in top-left-origin coordinates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenInfo {
-    /// Stable identity for the layout state (geometry-derived).
+    /// Stable identity for the layout state, derived from the geometry because
+    /// macOS gives displays no id of their own.
     pub key: String,
     pub frame: Rect,
 }
@@ -165,12 +166,13 @@ pub struct ScreenInfo {
 /// One manageable window on some screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowInfo {
-    /// Stable identity for the layout state (`pid:window_number` or similar).
+    /// Stable identity for the layout state (`pid:window_number` or similar) — the
+    /// window number is only as good as the last refresh.
     pub key: String,
     pub pid: i32,
     pub title: String,
     pub frame: Rect,
     pub screen_key: String,
-    /// Sort order used to break ties when picking representatives.
+    /// Sort order that breaks ties when picking a representative window.
     pub order: u64,
 }
