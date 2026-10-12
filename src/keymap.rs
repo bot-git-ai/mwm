@@ -214,7 +214,6 @@ pub fn load_bindings(path: Option<&Path>) -> Result<Vec<KeyBinding>, String> {
     parse_binding_map(&text)
 }
 
-/// The bindings mwm ships with, parsed.
 fn built_in_bindings() -> Result<Vec<KeyBinding>, String> {
     let pairs = default_bindings();
     let mut bindings = Vec::with_capacity(pairs.len());

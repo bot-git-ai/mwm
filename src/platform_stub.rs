@@ -11,7 +11,6 @@ use crate::types::{ScreenInfo, WindowInfo};
 pub struct StubWindowSystem;
 
 impl StubWindowSystem {
-    /// A stub that always reports "not macOS".
     pub fn new() -> Self {
         Self
     }

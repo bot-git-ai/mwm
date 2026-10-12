@@ -9,25 +9,16 @@ use crate::types::Direction;
 /// A command the daemon understands.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Request {
-    /// Move keyboard focus.
     Focus(Direction),
-    /// Move the focused window within the layout.
     Move(Direction),
-    /// Switch to another desktop (Space).
     GotoDesktop(u8),
     /// Set how many columns to keep, possibly fractional (2.5).
     Columns(f64),
-    /// Toggle fullscreen for the focused window.
     Fullscreen,
-    /// Close the focused window.
     Close,
-    /// Re-apply the layout now.
     Retile,
-    /// Report a one-line status summary.
     Status,
-    /// Stop the daemon.
     Stop,
-    /// Restart the daemon.
     Restart,
 }
 
@@ -80,9 +71,7 @@ impl Request {
 /// The daemon's answer, one line of JSON.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IpcResponse {
-    /// Whether the command succeeded.
     pub ok: bool,
-    /// Human-readable outcome.
     pub message: String,
 }
 

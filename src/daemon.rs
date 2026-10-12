@@ -54,7 +54,6 @@ unsafe extern "C" {
     fn libc_getuid() -> u32;
 }
 
-/// What the CLI decided to do.
 #[derive(Debug, Clone, PartialEq)]
 enum Action {
     Daemon {
@@ -361,7 +360,6 @@ fn parse_launchd(args: &[String]) -> Action {
     }
 }
 
-/// Entry point: turn a process argument vector into an exit code.
 pub fn cli_main<I, S>(args: I) -> i32
 where
     I: IntoIterator<Item = S>,
@@ -424,7 +422,6 @@ where
     }
 }
 
-/// Send one request to a running daemon and report its answer.
 fn send_request(path: &Path, request: &Request, verbose: bool) -> i32 {
     let response = match request_daemon(path, request) {
         Ok(response) => response,
@@ -515,7 +512,6 @@ fn write_plist(label: Option<&str>, output: Option<&Path>) -> i32 {
     0
 }
 
-/// How the daemon was started.
 #[derive(Debug, Clone, PartialEq)]
 struct DaemonConfig {
     columns: f64,
@@ -707,7 +703,6 @@ impl Core {
         }
     }
 
-    /// Move keyboard focus in a direction.
     fn focus(&mut self, direction: Direction) -> String {
         let Some(current) = self.system.focused_window() else {
             return "no focused window".to_string();
@@ -773,7 +768,6 @@ impl Core {
         }
     }
 
-    /// Close the focused window.
     fn close_focused(&mut self) -> String {
         let Some(current) = self.system.focused_window() else {
             return "no focused window".to_string();
@@ -787,7 +781,6 @@ impl Core {
         }
     }
 
-    /// A one-line description of the current state.
     fn status(&mut self) -> String {
         let windows = self.system.windows().map_or(0, |windows| windows.len());
         format!(
@@ -855,7 +848,6 @@ fn serve_client(core: &mut Core, message: &IpcMessage, verbose: bool) -> bool {
     stopping
 }
 
-/// The answer a stopping daemon gives.
 fn response_for(restarting: bool) -> IpcResponse {
     if restarting {
         IpcResponse::ok("restarting")
